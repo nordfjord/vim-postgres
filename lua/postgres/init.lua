@@ -1,6 +1,6 @@
 local M = {}
 
-M.config = {}
+M.options = {}
 
 local output_bufnr = -1
 
@@ -9,6 +9,7 @@ local function open_buffer()
 	if output_bufnr == -1 or not buffer_visible then
 		vim.cmd("botright split POSTGRES_RESULTS")
 		output_bufnr = vim.api.nvim_get_current_buf()
+		vim.api.nvim_buf_set_option(output_bufnr, "buftype", "nofile")
 		vim.opt_local.readonly = true
 	end
 end
@@ -36,7 +37,7 @@ M.execute = function(query)
 	open_buffer()
 	clear_buf()
 
-	local url = M.config.databaseUrl.value
+	local url = M.options.url
 	vim.fn.jobstart({ "psql", url, "-c", query, "-P", "border=2" }, {
 		stdout_buffered = true,
 		on_stdout = append_to_buf,
@@ -45,35 +46,49 @@ M.execute = function(query)
 end
 
 local function get_visual_selection()
-	local s_start = vim.fn.getpos("'<")
-	local s_end = vim.fn.getpos("'>")
-	local n_lines = math.abs(s_end[2] - s_start[2]) + 1
-	local lines = vim.api.nvim_buf_get_lines(0, s_start[2] - 1, s_end[2], false)
-	lines[1] = string.sub(lines[1], s_start[3], -1)
-	if n_lines == 1 then
-		lines[n_lines] = string.sub(lines[n_lines], 1, s_end[3] - s_start[3] + 1)
-	else
-		lines[n_lines] = string.sub(lines[n_lines], 1, s_end[3])
-	end
-	return table.concat(lines, "\n")
+	local oldreg = vim.fn.getreg("v")
+	vim.cmd('noau normal! "vy')
+	local visual_selection = vim.fn.getreg("v")
+	vim.fn.setreg("v", oldreg)
+	return visual_selection
 end
 
-M.execute_under_cursor = function()
+M.execute_visual = function()
 	local text = get_visual_selection()
-	local result = M.execute(text)
-	print(result)
+	M.execute(text)
+end
+
+M.execute_current = function()
+	local ts_utils = require("nvim-treesitter.ts_utils")
+	local node = ts_utils.get_node_at_cursor()
+	while node do
+		if node:type() == "statement" then
+			break
+		end
+		node = node:parent()
+	end
+	if not node then
+		print("No query under cursor")
+	end
+	local nodetext = ts_utils.get_node_text(node)
+	local text = table.concat(nodetext, "\n")
+	M.execute(text)
 end
 
 M.setup = function(opts)
 	if opts then
 		if opts.database_url then
-			M.config.url = opts.database_url
+			M.options.url = opts.database_url
 		elseif opts.env_var then
-			M.config.url = os.getenv(opts.env_var)
+			M.options.url = os.getenv(opts.env_var)
 		end
 	end
 	vim.api.nvim_create_user_command("PgExecute", function()
-		M.execute_under_cursor()
+		if vim.fn.mode() == "v" then
+			M.execute_visual()
+		elseif vim.fn.mode() == "n" then
+			M.execute_current()
+		end
 	end, {})
 end
 
